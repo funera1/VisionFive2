@@ -78,9 +78,11 @@ spike_srcdir := $(srcdir)/riscv-isa-sim
 spike_wrkdir := $(wrkdir)/riscv-isa-sim
 spike := $(spike_wrkdir)/prefix/bin/spike
 
-qemu_srcdir := $(srcdir)/riscv-qemu
-qemu_wrkdir := $(wrkdir)/riscv-qemu
-qemu := $(qemu_wrkdir)/prefix/bin/qemu-system-riscv64
+QEMU ?= qemu-system-riscv64
+QEMU_MACHINE ?= virt
+QEMU_MEMORY ?= 1G
+QEMU_CPUS ?= 4
+qemu_kernel := $(linux_wrkdir)/arch/riscv/boot/Image
 
 uboot_srcdir := $(srcdir)/u-boot
 uboot_wrkdir := $(wrkdir)/u-boot
@@ -329,19 +331,6 @@ $(spike): $(spike_srcdir) $(libfesvr)
 	$(MAKE) -C $(spike_wrkdir) install
 	touch -c $@
 
-$(qemu): $(qemu_srcdir)
-	rm -rf $(qemu_wrkdir)
-	mkdir -p $(qemu_wrkdir)
-	mkdir -p $(dir $@)
-	which pkg-config
-	# pkg-config from buildroot blows up qemu configure
-	cd $(qemu_wrkdir) && $</configure \
-		--prefix=$(dir $(abspath $(dir $@))) \
-		--target-list=riscv64-softmmu
-	$(MAKE) -C $(qemu_wrkdir)
-	$(MAKE) -C $(qemu_wrkdir) install
-	touch -c $@
-
 .PHONY: uboot-menuconfig
 uboot-menuconfig: $(uboot_wrkdir)/.config
 	$(MAKE) -C $(uboot_srcdir) O=$(dir $<) CROSS_COMPILE=$(CROSS_COMPILE) ARCH=riscv menuconfig
@@ -404,13 +393,23 @@ sim: $(spike) $(sbi_bin)
 	$(spike) --isa=$(ISA) -p4 $(sbi_bin)
 
 .PHONY: qemu
-qemu: $(qemu) $(sbi_bin) $(vmlinux) $(initramfs)
-	$(qemu) -nographic -machine virt -bios $(sbi_bin) -kernel $(vmlinux) -initrd $(initramfs) \
+qemu:
+	@command -v $(QEMU) >/dev/null || { echo "$(QEMU) is required (Ubuntu/Debian: sudo apt install qemu-system-misc)"; exit 1; }
+	@if [ ! -f $(qemu_kernel) ] || [ ! -f $(initramfs) ]; then $(MAKE) $(vmlinux) $(initramfs); fi
+	@test -f $(qemu_kernel) || { echo "Missing $(qemu_kernel); rebuild the kernel with 'make vmlinux'"; exit 1; }
+	$(QEMU) -nographic -machine $(QEMU_MACHINE) -m $(QEMU_MEMORY) -smp $(QEMU_CPUS) \
+		-bios default -kernel $(qemu_kernel) -initrd $(initramfs) \
+		-append "console=ttyS0 earlycon=sbi rdinit=/sbin/init" \
 		-netdev user,id=net0 -device virtio-net-device,netdev=net0
 
 .PHONY: qemu-rootfs
-qemu-rootfs: $(qemu) $(sbi_bin) $(vmlinux) $(initramfs) $(rootfs)
-	$(qemu) -nographic -machine virt -bios $(sbi_bin) -kernel $(vmlinux) -initrd $(initramfs) \
+qemu-rootfs:
+	@command -v $(QEMU) >/dev/null || { echo "$(QEMU) is required (Ubuntu/Debian: sudo apt install qemu-system-misc)"; exit 1; }
+	@if [ ! -f $(qemu_kernel) ] || [ ! -f $(initramfs) ] || [ ! -f $(rootfs) ]; then $(MAKE) $(vmlinux) $(initramfs) $(rootfs); fi
+	@test -f $(qemu_kernel) || { echo "Missing $(qemu_kernel); rebuild the kernel with 'make vmlinux'"; exit 1; }
+	$(QEMU) -nographic -machine $(QEMU_MACHINE) -m $(QEMU_MEMORY) -smp $(QEMU_CPUS) \
+		-bios default -kernel $(qemu_kernel) -initrd $(initramfs) \
+		-append "console=ttyS0 earlycon=sbi rdinit=/sbin/init" \
 		-drive file=$(rootfs),format=raw,id=hd0 -device virtio-blk-device,drive=hd0 \
 		-netdev user,id=net0 -device virtio-net-device,netdev=net0
 
